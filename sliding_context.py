@@ -23,6 +23,10 @@ class SlidingWindowContext:
 
     def __init__(self, max_tokens: int = 512, summary_tokens: int = 128) -> None:
         self.max_tokens = max_tokens          # total context budget (the limit)
+        # The summary must always be smaller than the whole window, otherwise
+        # the window can never fit under the limit.
+        if summary_tokens >= max_tokens:
+            summary_tokens = max(16, max_tokens // 2)
         self.summary_tokens = summary_tokens  # budget for the distilled part
 
         self.summary = ""                     # distilled older context
@@ -56,10 +60,17 @@ class SlidingWindowContext:
         # summary from it. The summary is capped at summary_tokens.
         while self.total_tokens() > self.max_tokens and len(self.recent) > 1:
             self._overflow.append(self.recent.pop(0))
-            self.summary = summarize(
-                " ".join(self._overflow), budget=self.summary_tokens
-            )
-            self.compressions += 1
+            self._rebuild_summary(self.summary_tokens)
+
+        # If a single recent turn plus the summary still overflows, shrink the
+        # summary further so the window actually respects the limit.
+        if self.total_tokens() > self.max_tokens and self._overflow:
+            budget = max(8, self.max_tokens - self.recent_token_count())
+            self._rebuild_summary(budget)
+
+    def _rebuild_summary(self, budget: int) -> None:
+        self.summary = summarize(" ".join(self._overflow), budget=budget)
+        self.compressions += 1
 
     # ------------------------------------------------------------------ #
     # Render
